@@ -6,6 +6,16 @@ A macOS notch-style Spotify player that lives around your MacBook's notch — in
 ![Swift](https://img.shields.io/badge/Swift-5.9%2B-orange?logo=swift)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
+<p align="center">
+  <img src="assets/collapsed.png" alt="Collapsed view" width="400">
+  <br><em>Collapsed — album art in the notch</em>
+</p>
+
+<p align="center">
+  <img src="assets/expanded.png" alt="Expanded view" width="680">
+  <br><em>Expanded — full player with album library</em>
+</p>
+
 ## Features
 
 - **Notch integration** — sits seamlessly around the MacBook notch
