@@ -184,19 +184,20 @@ struct SettingsContentView: View {
     @State private var isConfigured = AppConfig.isConfigured
 
     var body: some View {
-        if isConfigured {
-            settingsPanel
-        } else {
-            SetupGuideView(isConfigured: $isConfigured)
-                .onChange(of: isConfigured) { _, configured in
-                    if configured {
-                        viewModel.refreshConfigState()
-                        // Resize window to settings size
-                        window?.setContentSize(NSSize(width: 380, height: 340))
-                        window?.title = "SpotifyIsland Settings"
-                        window?.center()
-                    }
-                }
+        Group {
+            if isConfigured {
+                settingsPanel
+            } else {
+                SetupGuideView(isConfigured: $isConfigured)
+            }
+        }
+        .onChange(of: isConfigured) { _, configured in
+            if configured {
+                viewModel.refreshConfigState()
+                window?.setContentSize(NSSize(width: 380, height: 340))
+                window?.title = "SpotifyIsland Settings"
+                window?.center()
+            }
         }
     }
 
