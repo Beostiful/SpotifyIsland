@@ -104,61 +104,95 @@ actor SpotifyAPIService {
 
     // MARK: - Playback Control
 
-    func play() async throws {
-        try await authorizedRequest("\(baseURL)/me/player/play", method: "PUT")
+    // All playback methods accept an optional device_id to pin commands to a specific device.
+    // When using the Web Playback SDK, always pass its device ID.
+
+    func play(deviceId: String? = nil) async throws {
+        try await authorizedRequest(
+            "\(baseURL)/me/player/play",
+            method: "PUT",
+            queryItems: deviceIdQuery(deviceId)
+        )
     }
 
-    func pause() async throws {
-        try await authorizedRequest("\(baseURL)/me/player/pause", method: "PUT")
+    func pause(deviceId: String? = nil) async throws {
+        try await authorizedRequest(
+            "\(baseURL)/me/player/pause",
+            method: "PUT",
+            queryItems: deviceIdQuery(deviceId)
+        )
     }
 
-    func skipNext() async throws {
-        try await authorizedRequest("\(baseURL)/me/player/next", method: "POST")
+    func skipNext(deviceId: String? = nil) async throws {
+        try await authorizedRequest(
+            "\(baseURL)/me/player/next",
+            method: "POST",
+            queryItems: deviceIdQuery(deviceId)
+        )
     }
 
-    func skipPrevious() async throws {
-        try await authorizedRequest("\(baseURL)/me/player/previous", method: "POST")
+    func skipPrevious(deviceId: String? = nil) async throws {
+        try await authorizedRequest(
+            "\(baseURL)/me/player/previous",
+            method: "POST",
+            queryItems: deviceIdQuery(deviceId)
+        )
     }
 
-    func seek(toMs ms: Int) async throws {
+    func seek(toMs ms: Int, deviceId: String? = nil) async throws {
+        var items = [URLQueryItem(name: "position_ms", value: "\(ms)")]
+        if let id = deviceId { items.append(URLQueryItem(name: "device_id", value: id)) }
         try await authorizedRequest(
             "\(baseURL)/me/player/seek",
             method: "PUT",
-            queryItems: [URLQueryItem(name: "position_ms", value: "\(ms)")]
+            queryItems: items
         )
     }
 
-    func setVolume(_ percent: Int) async throws {
+    func setVolume(_ percent: Int, deviceId: String? = nil) async throws {
         let clamped = max(0, min(100, percent))
+        var items = [URLQueryItem(name: "volume_percent", value: "\(clamped)")]
+        if let id = deviceId { items.append(URLQueryItem(name: "device_id", value: id)) }
         try await authorizedRequest(
             "\(baseURL)/me/player/volume",
             method: "PUT",
-            queryItems: [URLQueryItem(name: "volume_percent", value: "\(clamped)")]
+            queryItems: items
         )
     }
 
-    func setShuffle(_ enabled: Bool) async throws {
+    func setShuffle(_ enabled: Bool, deviceId: String? = nil) async throws {
+        var items = [URLQueryItem(name: "state", value: enabled ? "true" : "false")]
+        if let id = deviceId { items.append(URLQueryItem(name: "device_id", value: id)) }
         try await authorizedRequest(
             "\(baseURL)/me/player/shuffle",
             method: "PUT",
-            queryItems: [URLQueryItem(name: "state", value: enabled ? "true" : "false")]
+            queryItems: items
         )
     }
 
-    func setRepeat(_ mode: RepeatMode) async throws {
+    func setRepeat(_ mode: RepeatMode, deviceId: String? = nil) async throws {
+        var items = [URLQueryItem(name: "state", value: mode.rawValue)]
+        if let id = deviceId { items.append(URLQueryItem(name: "device_id", value: id)) }
         try await authorizedRequest(
             "\(baseURL)/me/player/repeat",
             method: "PUT",
-            queryItems: [URLQueryItem(name: "state", value: mode.rawValue)]
+            queryItems: items
         )
+    }
+
+    private func deviceIdQuery(_ deviceId: String?) -> [URLQueryItem] {
+        guard let id = deviceId else { return [] }
+        return [URLQueryItem(name: "device_id", value: id)]
     }
 
     // MARK: - Transfer Playback
 
-    func transferPlayback(toDeviceId deviceId: String, play: Bool = false) async throws {
-        let body = try JSONEncoder().encode([
-            "device_ids": [deviceId]
-        ])
+    func transferPlayback(toDeviceId deviceId: String, play: Bool = true) async throws {
+        let bodyDict: [String: Any] = [
+            "device_ids": [deviceId],
+            "play": play
+        ]
+        let body = try JSONSerialization.data(withJSONObject: bodyDict)
         try await authorizedRequest("\(baseURL)/me/player", method: "PUT", body: body)
     }
 
@@ -175,9 +209,67 @@ actor SpotifyAPIService {
         return try JSONDecoder().decode(SpotifySavedAlbumsResponse.self, from: data)
     }
 
-    func playAlbum(uri: String) async throws {
+    func playAlbum(uri: String, deviceId: String? = nil) async throws {
         let body = try JSONEncoder().encode(["context_uri": uri])
-        try await authorizedRequest("\(baseURL)/me/player/play", method: "PUT", body: body)
+        try await authorizedRequest(
+            "\(baseURL)/me/player/play",
+            method: "PUT",
+            body: body,
+            queryItems: deviceIdQuery(deviceId)
+        )
+    }
+
+    func getMyPlaylists(limit: Int = 50, offset: Int = 0) async throws -> SpotifyPlaylistsResponse {
+        let (data, _) = try await authorizedRequest(
+            "\(baseURL)/me/playlists",
+            queryItems: [
+                URLQueryItem(name: "limit", value: "\(limit)"),
+                URLQueryItem(name: "offset", value: "\(offset)")
+            ]
+        )
+        return try JSONDecoder().decode(SpotifyPlaylistsResponse.self, from: data)
+    }
+
+    func getSavedTracks(limit: Int = 50, offset: Int = 0) async throws -> SpotifySavedTracksResponse {
+        let (data, _) = try await authorizedRequest(
+            "\(baseURL)/me/tracks",
+            queryItems: [
+                URLQueryItem(name: "limit", value: "\(limit)"),
+                URLQueryItem(name: "offset", value: "\(offset)")
+            ]
+        )
+        return try JSONDecoder().decode(SpotifySavedTracksResponse.self, from: data)
+    }
+
+    func getRecentlyPlayed(limit: Int = 50) async throws -> SpotifyRecentlyPlayedResponse {
+        let (data, _) = try await authorizedRequest(
+            "\(baseURL)/me/player/recently-played",
+            queryItems: [
+                URLQueryItem(name: "limit", value: "\(limit)")
+            ]
+        )
+        return try JSONDecoder().decode(SpotifyRecentlyPlayedResponse.self, from: data)
+    }
+
+    func playPlaylist(uri: String, deviceId: String? = nil) async throws {
+        let body = try JSONEncoder().encode(["context_uri": uri])
+        try await authorizedRequest(
+            "\(baseURL)/me/player/play",
+            method: "PUT",
+            body: body,
+            queryItems: deviceIdQuery(deviceId)
+        )
+    }
+
+    func playTrack(uri: String, deviceId: String? = nil) async throws {
+        let bodyDict: [String: Any] = ["uris": [uri]]
+        let body = try JSONSerialization.data(withJSONObject: bodyDict)
+        try await authorizedRequest(
+            "\(baseURL)/me/player/play",
+            method: "PUT",
+            body: body,
+            queryItems: deviceIdQuery(deviceId)
+        )
     }
 
     func checkSaved(trackIds: [String]) async throws -> [Bool] {

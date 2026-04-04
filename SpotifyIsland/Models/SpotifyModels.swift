@@ -149,6 +149,107 @@ struct SpotifyFullAlbum: Codable, Identifiable {
     }
 }
 
+// MARK: - Playlists
+
+struct SpotifyPlaylistsResponse: Codable {
+    let items: [SpotifyPlaylist]
+    let total: Int
+    let limit: Int
+    let offset: Int
+}
+
+struct SpotifyPlaylist: Codable, Identifiable {
+    let id: String
+    let name: String
+    let images: [SpotifyImage]
+    let uri: String
+    let owner: SpotifyPlaylistOwner?
+    let tracksInfo: SpotifyPlaylistTracksInfo?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, images, uri, owner
+        case tracksInfo = "tracks"
+    }
+
+    var smallImageURL: URL? {
+        let sorted = images.sorted { ($0.width ?? 9999) < ($1.width ?? 9999) }
+        return sorted.first.flatMap { URL(string: $0.url) }
+    }
+
+    var ownerName: String {
+        owner?.displayName ?? ""
+    }
+}
+
+struct SpotifyPlaylistOwner: Codable {
+    let displayName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case displayName = "display_name"
+    }
+}
+
+struct SpotifyPlaylistTracksInfo: Codable {
+    let total: Int
+}
+
+// MARK: - Saved Tracks (Liked Songs)
+
+struct SpotifySavedTracksResponse: Codable {
+    let items: [SpotifySavedTrackItem]
+    let total: Int
+    let limit: Int
+    let offset: Int
+}
+
+struct SpotifySavedTrackItem: Codable, Identifiable {
+    let addedAt: String
+    let track: SpotifyTrack
+
+    var id: String { track.id }
+
+    enum CodingKeys: String, CodingKey {
+        case addedAt = "added_at"
+        case track
+    }
+}
+
+// MARK: - Recently Played
+
+struct SpotifyRecentlyPlayedResponse: Codable {
+    let items: [SpotifyRecentItem]
+}
+
+struct SpotifyRecentItem: Codable, Identifiable {
+    let track: SpotifyTrack
+    let playedAt: String
+
+    var id: String { "\(track.id)-\(playedAt)" }
+
+    enum CodingKeys: String, CodingKey {
+        case track
+        case playedAt = "played_at"
+    }
+}
+
+// MARK: - Library Filter
+
+enum LibraryFilter: String, CaseIterable {
+    case albums = "Albums"
+    case playlists = "Playlists"
+    case likedSongs = "Liked Songs"
+    case recentlyPlayed = "Recently Played"
+
+    var icon: String {
+        switch self {
+        case .albums: return "square.stack"
+        case .playlists: return "music.note.list"
+        case .likedSongs: return "heart.fill"
+        case .recentlyPlayed: return "clock"
+        }
+    }
+}
+
 // MARK: - Repeat Mode
 
 enum RepeatMode: String {

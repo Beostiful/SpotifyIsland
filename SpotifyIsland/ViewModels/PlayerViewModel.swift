@@ -26,21 +26,61 @@ final class PlayerViewModel: ObservableObject {
     // Library
     @Published var isLiked = false
     @Published var savedAlbums: [SpotifySavedAlbumItem] = []
+    @Published var playlists: [SpotifyPlaylist] = []
+    @Published var likedSongs: [SpotifySavedTrackItem] = []
+    @Published var recentlyPlayed: [SpotifyRecentItem] = []
+    @Published var libraryFilter: LibraryFilter = .albums
 
     // UI
     @Published var isSeeking = false
+    @Published var isAdjustingVolume = false
     @Published var errorMessage: String?
     @Published var isPremiumError = false
+
+    // MARK: - Volume Persistence
+
+    private static let volumeKey = "SpotifyIsland.lastVolume"
+    private static let defaultSafeVolume = 30  // Safe startup cap
+
+    private var savedVolume: Int {
+        let v = UserDefaults.standard.integer(forKey: Self.volumeKey)
+        return v > 0 ? v : Self.defaultSafeVolume
+    }
+
+    private func persistVolume(_ percent: Int) {
+        UserDefaults.standard.set(percent, forKey: Self.volumeKey)
+    }
 
     // MARK: - Web Playback
 
     private let playbackService = WebPlaybackService.shared
     private var playbackCancellable: AnyCancellable?
 
+    /// The SDK device ID — used to pin all REST API calls to the correct device.
+    private var sdkDeviceId: String? { playbackService.deviceId }
+
+    // MARK: - Debouncing
+
+    private var inFlightActions: Set<String> = []
+    private var volumeDebounceTask: Task<Void, Never>?
+
+    private func debounced(_ key: String, action: () async -> Void) async {
+        guard !inFlightActions.contains(key) else { return }
+        inFlightActions.insert(key)
+        defer { inFlightActions.remove(key) }
+        await action()
+    }
+
     // MARK: - Timers
 
     private var pollTimer: Timer?
     private var progressTimer: Timer?
+
+    /// Consecutive polls that returned no active playback.
+    /// We only clear UI state after several misses in a row to avoid
+    /// flashing during track transitions.
+    private var consecutiveEmptyPolls = 0
+    private let emptyPollThreshold = 3
 
     // MARK: - Init
 
@@ -51,14 +91,23 @@ final class PlayerViewModel: ObservableObject {
     // MARK: - Auth
 
     func checkAuth() async {
-        let tokens = await KeychainService.shared.loadTokens()
-        isAuthenticated = tokens != nil
-        if isAuthenticated {
-            await startWebPlayback()
-            startTimers()
-            await pollPlayback()
-            await fetchSavedAlbums()
+        guard let tokens = await KeychainService.shared.loadTokens() else {
+            isAuthenticated = false
+            return
         }
+
+        // Token from before streaming scope was added — force re-login once
+        if !tokens.scope.isEmpty && !tokens.scope.contains("streaming") {
+            await KeychainService.shared.deleteTokens()
+            isAuthenticated = false
+            return
+        }
+
+        isAuthenticated = true
+        await startWebPlayback()
+        startTimers()
+        await pollPlayback()
+        await fetchSavedAlbums()
     }
 
     func login() {
@@ -106,12 +155,39 @@ final class PlayerViewModel: ObservableObject {
     // MARK: - Web Playback SDK
 
     private func startWebPlayback() async {
-        guard let tokens = await KeychainService.shared.loadTokens() else { return }
+        // Ensure we have a fresh (non-expired) token before starting SDK
+        guard var tokens = await KeychainService.shared.loadTokens() else { return }
+
+        if tokens.isExpired {
+            NSLog("[SpotifyIsland] Token expired on startup — refreshing before SDK init")
+            do {
+                tokens = try await SpotifyAuthService.shared.refreshAccessToken(refreshToken: tokens.refreshToken)
+            } catch {
+                NSLog("[SpotifyIsland] Token refresh failed: \(error.localizedDescription)")
+                return
+            }
+        }
+
+        // Restore last-known volume (safe default if first launch)
+        let safeVol = savedVolume
+        volumePercent = safeVol
+        playbackService.initialVolumeFraction = Double(safeVol) / 100.0
+
+        // Wire up state_changed callback for instant polling
+        playbackService.onStateChanged = { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // Small delay to let Spotify backend catch up
+                try? await Task.sleep(for: .milliseconds(200))
+                await self.pollPlayback()
+            }
+        }
 
         playbackService.setup { [weak self] in
             guard self != nil else { return nil }
             let t = await KeychainService.shared.loadTokens()
             if let t, t.isExpired {
+                NSLog("[SpotifyIsland] Token provider: refreshing expired token")
                 let refreshed = try? await SpotifyAuthService.shared.refreshAccessToken(refreshToken: t.refreshToken)
                 return refreshed?.accessToken
             }
@@ -119,15 +195,23 @@ final class PlayerViewModel: ObservableObject {
         }
         playbackService.updateToken(tokens.accessToken)
 
-        // When the SDK is ready, transfer playback to this device
+        // When the SDK is ready, transfer playback and apply safe volume
         playbackCancellable = playbackService.$deviceId
             .compactMap { $0 }
             .first()
             .sink { [weak self] deviceId in
                 Task { [weak self] in
-                    guard self != nil else { return }
-                    try? await SpotifyAPIService.shared.transferPlayback(toDeviceId: deviceId)
-                    NSLog("[SpotifyIsland] Transferred playback to local device: \(deviceId)")
+                    guard let self else { return }
+                    if self.playbackService.hasAuthError == false {
+                        // Set volume on the new device FIRST (before transfer starts playback)
+                        let targetVolume = self.savedVolume
+                        try? await SpotifyAPIService.shared.transferPlayback(toDeviceId: deviceId)
+                        // Apply saved volume immediately after transfer
+                        try? await SpotifyAPIService.shared.setVolume(targetVolume, deviceId: deviceId)
+                        NSLog("[SpotifyIsland] Transferred to SDK device: \(deviceId), volume: \(targetVolume)%")
+                    } else {
+                        NSLog("[SpotifyIsland] SDK has auth error — using external device")
+                    }
                 }
             }
     }
@@ -137,7 +221,7 @@ final class PlayerViewModel: ObservableObject {
     private func startTimers() {
         stopTimers()
 
-        // Poll API every 2 seconds
+        // Poll API every 2 seconds (state_changed gives us instant updates too)
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { [weak self] in await self?.pollPlayback() }
         }
@@ -161,16 +245,62 @@ final class PlayerViewModel: ObservableObject {
         progressTimer = nil
     }
 
+    // MARK: - Token Maintenance
+
+    /// Proactively refresh token if expiring within 5 minutes.
+    private var lastTokenRefreshCheck = Date.distantPast
+
+    private func refreshTokenIfNeeded() async {
+        // Only check once per minute to avoid hammering keychain
+        guard Date().timeIntervalSince(lastTokenRefreshCheck) > 60 else { return }
+        lastTokenRefreshCheck = Date()
+
+        guard let tokens = await KeychainService.shared.loadTokens() else { return }
+
+        let expiryDate = tokens.grantedAt.addingTimeInterval(Double(tokens.expiresIn))
+        let timeRemaining = expiryDate.timeIntervalSinceNow
+
+        if timeRemaining < 300 {
+            NSLog("[SpotifyIsland] Token expiring in \(Int(timeRemaining))s — proactively refreshing")
+            do {
+                let newTokens = try await SpotifyAuthService.shared.refreshAccessToken(refreshToken: tokens.refreshToken)
+                playbackService.updateToken(newTokens.accessToken)
+            } catch {
+                NSLog("[SpotifyIsland] Proactive token refresh failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     // MARK: - Polling
 
+    private func pollAfterAction(expectingTrackChange: Bool = false) async {
+        let trackIdBefore = currentTrack?.id
+        // Give Spotify a moment to process the action
+        try? await Task.sleep(for: .milliseconds(300))
+        await pollPlayback()
+        if expectingTrackChange, currentTrack?.id == trackIdBefore {
+            try? await Task.sleep(for: .milliseconds(500))
+            await pollPlayback()
+        }
+    }
+
     private func pollPlayback() async {
+        await refreshTokenIfNeeded()
+
         do {
             guard let state = try await SpotifyAPIService.shared.getCurrentPlayback() else {
                 // No active device / nothing playing
-                currentTrack = nil
-                isPlaying = false
+                consecutiveEmptyPolls += 1
+                if consecutiveEmptyPolls >= emptyPollThreshold {
+                    // Only clear after several consecutive empty responses
+                    currentTrack = nil
+                    isPlaying = false
+                }
                 return
             }
+
+            // We have a valid state — reset empty counter
+            consecutiveEmptyPolls = 0
 
             let previousTrackId = currentTrack?.id
             let newTrack = state.item
@@ -181,7 +311,6 @@ final class PlayerViewModel: ObservableObject {
                 albumArtURL = newTrack?.album.bestImageURL
                 smallAlbumArtURL = newTrack?.album.smallImageURL
 
-                // Check liked status on track change
                 if let trackId = newTrack?.id {
                     await checkLiked(trackId: trackId)
                 } else {
@@ -194,8 +323,9 @@ final class PlayerViewModel: ObservableObject {
             shuffleState = state.shuffleState
             repeatMode = RepeatMode(rawValue: state.repeatState) ?? .off
 
-            if let deviceVolume = state.device?.volumePercent {
+            if let deviceVolume = state.device?.volumePercent, !isAdjustingVolume {
                 volumePercent = deviceVolume
+                persistVolume(deviceVolume)
             }
 
             // Correct progress drift (only when not user-dragging)
@@ -222,116 +352,194 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Playback Controls
+    // MARK: - Playback Controls (REST API with device pinning)
 
     func togglePlayPause() async {
-        do {
-            if isPlaying {
-                try await SpotifyAPIService.shared.pause()
-            } else {
-                try await SpotifyAPIService.shared.play()
+        await debounced("playPause") {
+            do {
+                if isPlaying {
+                    try await SpotifyAPIService.shared.pause(deviceId: sdkDeviceId)
+                } else {
+                    try await SpotifyAPIService.shared.play(deviceId: sdkDeviceId)
+                }
+                isPlaying.toggle()
+                await pollAfterAction()
+            } catch {
+                handlePlaybackError(error)
             }
-            isPlaying.toggle()
-        } catch {
-            handlePlaybackError(error)
         }
     }
 
     func skipNext() async {
-        do {
-            try await SpotifyAPIService.shared.skipNext()
-            // Poll immediately to get the new track
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            await pollPlayback()
-        } catch {
-            handlePlaybackError(error)
+        await debounced("skipNext") {
+            do {
+                try await SpotifyAPIService.shared.skipNext(deviceId: sdkDeviceId)
+                await pollAfterAction(expectingTrackChange: true)
+            } catch {
+                handlePlaybackError(error)
+            }
         }
     }
 
     func skipPrevious() async {
-        do {
-            try await SpotifyAPIService.shared.skipPrevious()
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            await pollPlayback()
-        } catch {
-            handlePlaybackError(error)
+        await debounced("skipPrevious") {
+            do {
+                try await SpotifyAPIService.shared.skipPrevious(deviceId: sdkDeviceId)
+                await pollAfterAction(expectingTrackChange: true)
+            } catch {
+                handlePlaybackError(error)
+            }
         }
     }
 
     func seek(toMs ms: Int) async {
-        isSeeking = false
-        progressMs = ms
-        do {
-            try await SpotifyAPIService.shared.seek(toMs: ms)
-        } catch {
-            handlePlaybackError(error)
+        await debounced("seek") {
+            isSeeking = false
+            progressMs = ms
+            do {
+                try await SpotifyAPIService.shared.seek(toMs: ms, deviceId: sdkDeviceId)
+            } catch {
+                handlePlaybackError(error)
+            }
         }
     }
 
-    func setVolume(_ percent: Int) async {
-        do {
-            try await SpotifyAPIService.shared.setVolume(percent)
-        } catch {
-            handlePlaybackError(error)
+    func setVolume(_ percent: Int) {
+        volumePercent = percent
+        persistVolume(percent)
+        isAdjustingVolume = true
+        volumeDebounceTask?.cancel()
+        volumeDebounceTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            do {
+                try await SpotifyAPIService.shared.setVolume(percent, deviceId: sdkDeviceId)
+            } catch {
+                handlePlaybackError(error)
+            }
+            isAdjustingVolume = false
         }
     }
 
     func toggleShuffle() async {
-        let newState = !shuffleState
-        shuffleState = newState
-        do {
-            try await SpotifyAPIService.shared.setShuffle(newState)
-        } catch {
-            shuffleState = !newState
-            handlePlaybackError(error)
+        await debounced("shuffle") {
+            let newState = !shuffleState
+            shuffleState = newState
+            do {
+                try await SpotifyAPIService.shared.setShuffle(newState, deviceId: sdkDeviceId)
+            } catch {
+                shuffleState = !newState
+                handlePlaybackError(error)
+            }
         }
     }
 
     func cycleRepeat() async {
-        let newMode = repeatMode.next()
-        repeatMode = newMode
-        do {
-            try await SpotifyAPIService.shared.setRepeat(newMode)
-        } catch {
-            repeatMode = repeatMode.next().next() // roll back
-            handlePlaybackError(error)
+        await debounced("repeat") {
+            let newMode = repeatMode.next()
+            let oldMode = repeatMode
+            repeatMode = newMode
+            do {
+                try await SpotifyAPIService.shared.setRepeat(newMode, deviceId: sdkDeviceId)
+            } catch {
+                repeatMode = oldMode
+                handlePlaybackError(error)
+            }
         }
     }
 
     func toggleLike() async {
-        guard let trackId = currentTrack?.id else { return }
-        let wasLiked = isLiked
-        isLiked = !wasLiked
-        do {
-            if wasLiked {
-                try await SpotifyAPIService.shared.removeTrack(id: trackId)
-            } else {
-                try await SpotifyAPIService.shared.saveTrack(id: trackId)
+        await debounced("like") {
+            guard let trackId = currentTrack?.id else { return }
+            let wasLiked = isLiked
+            isLiked = !wasLiked
+            do {
+                if wasLiked {
+                    try await SpotifyAPIService.shared.removeTrack(id: trackId)
+                } else {
+                    try await SpotifyAPIService.shared.saveTrack(id: trackId)
+                }
+            } catch {
+                isLiked = wasLiked
+                handlePlaybackError(error)
             }
-        } catch {
-            isLiked = wasLiked
-            handlePlaybackError(error)
         }
     }
 
     // MARK: - Albums
 
+    /// Fetches data for the current library filter.
+    func fetchLibrary() async {
+        switch libraryFilter {
+        case .albums:
+            await fetchSavedAlbums()
+        case .playlists:
+            await fetchPlaylists()
+        case .likedSongs:
+            await fetchLikedSongs()
+        case .recentlyPlayed:
+            await fetchRecentlyPlayed()
+        }
+    }
+
     func fetchSavedAlbums() async {
         do {
             let response = try await SpotifyAPIService.shared.getSavedAlbums()
             savedAlbums = response.items
-        } catch {
-            // Silently ignore — album list is non-critical
-        }
+        } catch {}
+    }
+
+    func fetchPlaylists() async {
+        do {
+            let response = try await SpotifyAPIService.shared.getMyPlaylists()
+            playlists = response.items
+        } catch {}
+    }
+
+    func fetchLikedSongs() async {
+        do {
+            let response = try await SpotifyAPIService.shared.getSavedTracks()
+            likedSongs = response.items
+        } catch {}
+    }
+
+    func fetchRecentlyPlayed() async {
+        do {
+            let response = try await SpotifyAPIService.shared.getRecentlyPlayed()
+            recentlyPlayed = response.items
+        } catch {}
     }
 
     func playAlbum(_ album: SpotifyFullAlbum) async {
-        do {
-            try await SpotifyAPIService.shared.playAlbum(uri: album.uri)
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            await pollPlayback()
-        } catch {
-            handlePlaybackError(error)
+        await debounced("playContext") {
+            do {
+                try await SpotifyAPIService.shared.playAlbum(uri: album.uri, deviceId: sdkDeviceId)
+                await pollAfterAction(expectingTrackChange: true)
+            } catch {
+                handlePlaybackError(error)
+            }
+        }
+    }
+
+    func playPlaylist(_ playlist: SpotifyPlaylist) async {
+        await debounced("playContext") {
+            do {
+                try await SpotifyAPIService.shared.playPlaylist(uri: playlist.uri, deviceId: sdkDeviceId)
+                await pollAfterAction(expectingTrackChange: true)
+            } catch {
+                handlePlaybackError(error)
+            }
+        }
+    }
+
+    func playTrack(_ track: SpotifyTrack) async {
+        await debounced("playContext") {
+            do {
+                try await SpotifyAPIService.shared.playTrack(uri: track.uri, deviceId: sdkDeviceId)
+                await pollAfterAction(expectingTrackChange: true)
+            } catch {
+                handlePlaybackError(error)
+            }
         }
     }
 
@@ -351,5 +559,6 @@ final class PlayerViewModel: ObservableObject {
     deinit {
         pollTimer?.invalidate()
         progressTimer?.invalidate()
+        volumeDebounceTask?.cancel()
     }
 }

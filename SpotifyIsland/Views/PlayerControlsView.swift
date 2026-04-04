@@ -182,8 +182,7 @@ struct PlayerControlsView: View {
                 value: Binding(
                     get: { Double(viewModel.volumePercent) },
                     set: { val in
-                        viewModel.volumePercent = Int(val)
-                        Task { await viewModel.setVolume(Int(val)) }
+                        viewModel.setVolume(Int(val))
                     }
                 ),
                 in: 0...100

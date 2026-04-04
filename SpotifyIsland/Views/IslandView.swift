@@ -26,12 +26,38 @@ struct IslandView: View {
 
     // MARK: - Pill Body
 
+    private let profileURL = URL(string: "https://web.facebook.com/beostiful/")!
+
+    /// Loads the author avatar from ~/Applications/SpotifyIsland.app/../avatar.png
+    /// or a known local path.
+    private static let avatarImage: NSImage? = {
+        // Try next to the app bundle first
+        if let bundlePath = Bundle.main.executableURL?.deletingLastPathComponent().deletingLastPathComponent() {
+            let beside = bundlePath.deletingLastPathComponent().appendingPathComponent("avatar.png")
+            if let img = NSImage(contentsOf: beside) { return img }
+        }
+        // Try a fixed config path
+        let configPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/spotifyisland/avatar.png")
+        if let img = NSImage(contentsOf: configPath) { return img }
+        return nil
+    }()
+
     private var pillBody: some View {
         VStack(spacing: 0) {
-            headerRow
-                .frame(height: kCollapsedHeight)
-                .opacity(viewModel.isExpanded ? 0 : 1)
-                .animation(.easeInOut(duration: 0.2), value: viewModel.isExpanded)
+            ZStack {
+                // Collapsed: album art + time
+                headerRow
+                    .opacity(viewModel.isExpanded ? 0 : 1)
+
+                // Expanded: avatar + author
+                if viewModel.isExpanded {
+                    authorBar
+                        .transition(.opacity)
+                }
+            }
+            .frame(height: kCollapsedHeight)
+            .animation(.easeInOut(duration: 0.2), value: viewModel.isExpanded)
 
             // Divider
             Rectangle()
@@ -109,7 +135,64 @@ struct IslandView: View {
             bottomRadius: viewModel.isExpanded ? 18 : 14
         )
         .fill(Color.black)
-        .shadow(color: .black.opacity(0.55), radius: 18, x: 0, y: 8)
+        .shadow(
+            color: .black.opacity(viewModel.isExpanded ? 0 : 0.55),
+            radius: viewModel.isExpanded ? 0 : 18,
+            x: 0,
+            y: viewModel.isExpanded ? 0 : 8
+        )
+    }
+
+    // MARK: - Author Bar (Expanded)
+
+    private var authorBar: some View {
+        HStack(spacing: 0) {
+            // Left: Author avatar
+            Group {
+                if let nsImage = Self.avatarImage {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    Circle()
+                        .fill(Color.white.opacity(0.1))
+                        .overlay(
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.3))
+                        )
+                }
+            }
+            .frame(width: 26, height: 26)
+            .clipShape(Circle())
+
+            Spacer()
+
+            // Right: Author credit
+            HStack(spacing: 4) {
+                Text("Author:")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.35))
+
+                Button {
+                    NSWorkspace.shared.open(profileURL)
+                } label: {
+                    Text("@Beostiful")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.6))
+                        .underline(color: .white.opacity(0.25))
+                }
+                .buttonStyle(.plain)
+                .onHover { hovering in
+                    if hovering {
+                        NSCursor.pointingHand.push()
+                    } else {
+                        NSCursor.pop()
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
     }
 
     // MARK: - Header Row (Collapsed)

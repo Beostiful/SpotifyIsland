@@ -13,7 +13,7 @@ actor SpotifyAuthService {
             return envId
         }
         // Fallback — replace with your own Client ID
-        return "YOUR_SPOTIFY_CLIENT_ID"
+        return "7b5153efed80424698706aeb61c3d496"
     }()
 
     private let redirectURI = "spotifyisland://callback"
@@ -21,6 +21,8 @@ actor SpotifyAuthService {
     private let tokenURL = "https://accounts.spotify.com/api/token"
     private let scopes = [
         "streaming",
+        "user-read-email",
+        "user-read-private",
         "user-read-playback-state",
         "user-modify-playback-state",
         "user-read-currently-playing",
@@ -55,7 +57,8 @@ actor SpotifyAuthService {
                 URLQueryItem(name: "redirect_uri", value: redirectURI),
                 URLQueryItem(name: "state", value: stateValue),
                 URLQueryItem(name: "code_challenge_method", value: "S256"),
-                URLQueryItem(name: "code_challenge", value: challenge)
+                URLQueryItem(name: "code_challenge", value: challenge),
+                URLQueryItem(name: "show_dialog", value: "true")
             ]
             if let url = components.url {
                 NSWorkspace.shared.open(url)
@@ -97,6 +100,7 @@ actor SpotifyAuthService {
         }
 
         let tokens = try await exchangeCode(code, verifier: verifier)
+        NSLog("[SpotifyIsland] Token granted with scopes: '\(tokens.scope)'")
         try await KeychainService.shared.saveTokens(tokens)
 
         self.codeVerifier = nil
@@ -144,14 +148,16 @@ actor SpotifyAuthService {
             throw AuthError.refreshFailed
         }
 
-        let newTokens = try parseTokenResponse(data, existingRefreshToken: refreshToken)
+        // Load existing scope so it's preserved through refresh (Spotify may omit scope in refresh response)
+        let existingTokens = await KeychainService.shared.loadTokens()
+        let newTokens = try parseTokenResponse(data, existingRefreshToken: refreshToken, existingScope: existingTokens?.scope)
         try await KeychainService.shared.saveTokens(newTokens)
         return newTokens
     }
 
     // MARK: - Helpers
 
-    private func parseTokenResponse(_ data: Data, existingRefreshToken: String? = nil) throws -> AuthTokens {
+    private func parseTokenResponse(_ data: Data, existingRefreshToken: String? = nil, existingScope: String? = nil) throws -> AuthTokens {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let accessToken = json["access_token"] as? String,
               let expiresIn = json["expires_in"] as? Int else {
@@ -159,7 +165,7 @@ actor SpotifyAuthService {
         }
 
         let refreshToken = (json["refresh_token"] as? String) ?? existingRefreshToken ?? ""
-        let scope = (json["scope"] as? String) ?? ""
+        let scope = (json["scope"] as? String) ?? existingScope ?? ""
 
         return AuthTokens(
             accessToken: accessToken,
