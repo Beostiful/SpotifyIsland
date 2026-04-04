@@ -68,7 +68,9 @@ struct IslandView: View {
             // Expanded content
             if viewModel.isExpanded {
                 Group {
-                    if viewModel.isAuthenticated {
+                    if !viewModel.isAppConfigured {
+                        setupPrompt
+                    } else if viewModel.isAuthenticated {
                         expandedContent
                     } else {
                         LoginView(onLogin: viewModel.login)
@@ -241,9 +243,53 @@ struct IslandView: View {
             )
     }
 
+    // MARK: - Setup Prompt (Not Configured)
+
+    private var setupPrompt: some View {
+        VStack(spacing: 16) {
+            Spacer()
+
+            Image(systemName: "gearshape.2")
+                .font(.system(size: 36, weight: .light))
+                .foregroundColor(.white.opacity(0.5))
+
+            VStack(spacing: 6) {
+                Text("Setup Required")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+
+                Text("Open Settings to configure your\nSpotify Developer credentials")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.5))
+                    .multilineTextAlignment(.center)
+            }
+
+            Button(action: onOpenSettings) {
+                Text("Open Settings")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .background(
+                        Capsule()
+                            .fill(Color(red: 0.11, green: 0.73, blue: 0.33))
+                    )
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     @ViewBuilder
     private var trackNameLabel: some View {
-        if !viewModel.isAuthenticated {
+        if !viewModel.isAppConfigured {
+            Text("Setup Required")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white.opacity(0.5))
+                .lineLimit(1)
+        } else if !viewModel.isAuthenticated {
             Text("Sign in to Spotify")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(.white.opacity(0.5))

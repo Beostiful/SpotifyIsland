@@ -6,17 +6,19 @@ actor SpotifyAuthService {
     static let shared = SpotifyAuthService()
 
     // MARK: - Configuration
-    // Set your Spotify Client ID from https://developer.spotify.com/dashboard
-    // Either replace this value or set the SPOTIFY_CLIENT_ID environment variable.
-    static let clientId: String = {
+    // Client ID is loaded from AppConfig (user enters it in Settings / Setup Guide).
+    // Falls back to SPOTIFY_CLIENT_ID env var for development.
+    static var clientId: String {
+        if let configured = AppConfig.clientId {
+            return configured
+        }
         if let envId = ProcessInfo.processInfo.environment["SPOTIFY_CLIENT_ID"], !envId.isEmpty {
             return envId
         }
-        // Fallback — replace with your own Client ID
-        return "7b5153efed80424698706aeb61c3d496"
-    }()
+        return ""
+    }
 
-    private let redirectURI = "spotifyisland://callback"
+    private var redirectURI: String { AppConfig.redirectURI }
     private let authURL = "https://accounts.spotify.com/authorize"
     private let tokenURL = "https://accounts.spotify.com/api/token"
     private let scopes = [

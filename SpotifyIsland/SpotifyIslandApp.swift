@@ -35,6 +35,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil
         )
+
+        // Auto-open setup guide on first launch (no Client ID configured)
+        if !AppConfig.isConfigured {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.openSettings()
+            }
+        }
     }
 
     // Fallback URL handler — called by macOS when spotifyisland:// URL is opened
@@ -106,17 +113,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let isSetup = !AppConfig.isConfigured
+        let size = isSetup ? NSRect(x: 0, y: 0, width: 520, height: 560) : NSRect(x: 0, y: 0, width: 380, height: 340)
+
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+            contentRect: size,
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "SpotifyIsland"
+        window.title = isSetup ? "SpotifyIsland Setup" : "SpotifyIsland Settings"
         window.appearance = NSAppearance(named: .darkAqua)
         window.isReleasedWhenClosed = false
 
-        let settingsContent = SettingsContentView(viewModel: viewModel)
+        let settingsContent = SettingsContentView(viewModel: viewModel, window: window)
         window.contentView = NSHostingView(rootView: settingsContent.preferredColorScheme(.dark))
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -165,10 +175,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 // MARK: - Settings View
 
+private let settingsGreen = Color(red: 0.11, green: 0.73, blue: 0.33)
+
 struct SettingsContentView: View {
     @ObservedObject var viewModel: PlayerViewModel
+    weak var window: NSWindow?
+
+    @State private var isConfigured = AppConfig.isConfigured
 
     var body: some View {
+        if isConfigured {
+            settingsPanel
+        } else {
+            SetupGuideView(isConfigured: $isConfigured)
+                .onChange(of: isConfigured) { _, configured in
+                    if configured {
+                        viewModel.refreshConfigState()
+                        // Resize window to settings size
+                        window?.setContentSize(NSSize(width: 380, height: 340))
+                        window?.title = "SpotifyIsland Settings"
+                        window?.center()
+                    }
+                }
+        }
+    }
+
+    // MARK: - Settings Panel (After Configuration)
+
+    private var settingsPanel: some View {
         VStack(spacing: 20) {
             Image(systemName: "music.note")
                 .font(.system(size: 36, weight: .light))
@@ -180,6 +214,7 @@ struct SettingsContentView: View {
 
             Divider()
 
+            // Connection status
             if viewModel.isAuthenticated {
                 VStack(spacing: 12) {
                     HStack {
@@ -205,9 +240,37 @@ struct SettingsContentView: View {
                         viewModel.login()
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(Color(red: 0.11, green: 0.73, blue: 0.33))
+                    .tint(settingsGreen)
                 }
             }
+
+            Divider()
+
+            // Client ID display
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Spotify Client ID")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.4))
+
+                HStack {
+                    Text(maskedClientId)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.6))
+
+                    Spacer()
+
+                    Button("Change") {
+                        isConfigured = false
+                        window?.setContentSize(NSSize(width: 520, height: 560))
+                        window?.title = "SpotifyIsland Setup"
+                        window?.center()
+                    }
+                    .font(.system(size: 10))
+                    .buttonStyle(.plain)
+                    .foregroundColor(settingsGreen)
+                }
+            }
+            .padding(.horizontal, 8)
 
             Spacer()
 
@@ -217,7 +280,14 @@ struct SettingsContentView: View {
                 .multilineTextAlignment(.center)
         }
         .padding(24)
-        .frame(width: 320, height: 240)
+        .frame(width: 380, height: 340)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var maskedClientId: String {
+        guard let id = AppConfig.clientId, id.count > 8 else { return "Not set" }
+        let prefix = String(id.prefix(4))
+        let suffix = String(id.suffix(4))
+        return "\(prefix)••••••••\(suffix)"
     }
 }

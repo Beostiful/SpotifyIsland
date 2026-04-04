@@ -9,6 +9,7 @@ final class PlayerViewModel: ObservableObject {
 
     @Published var isExpanded = false
     @Published var isAuthenticated = false
+    @Published var isAppConfigured = AppConfig.isConfigured
 
     // Track
     @Published var currentTrack: SpotifyTrack?
@@ -92,9 +93,19 @@ final class PlayerViewModel: ObservableObject {
         Task { await checkAuth() }
     }
 
+    // MARK: - Configuration
+
+    func refreshConfigState() {
+        isAppConfigured = AppConfig.isConfigured
+        if isAppConfigured && !isAuthenticated {
+            Task { await checkAuth() }
+        }
+    }
+
     // MARK: - Auth
 
     func checkAuth() async {
+        guard AppConfig.isConfigured else { return }
         guard let tokens = await KeychainService.shared.loadTokens() else {
             isAuthenticated = false
             return
