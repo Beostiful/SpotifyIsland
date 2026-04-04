@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>SpotifyIsland</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.spotifyisland.app</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleExecutable</key>
+    <string>SpotifyIsland</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>api.spotify.com</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <false/>
+                <key>NSExceptionRequiresForwardSecrecy</key>
+                <true/>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+            </dict>
+            <key>accounts.spotify.com</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <false/>
+                <key>NSExceptionRequiresForwardSecrecy</key>
+                <true/>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+            </dict>
+            <key>i.scdn.co</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <false/>
+                <key>NSExceptionRequiresForwardSecrecy</key>
+                <true/>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+            </dict>
+        </dict>
+    </dict>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.spotifyisland.app</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>spotifyisland</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
