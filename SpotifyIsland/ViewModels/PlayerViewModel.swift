@@ -41,10 +41,13 @@ final class PlayerViewModel: ObservableObject {
 
     private static let volumeKey = "SpotifyIsland.lastVolume"
     private static let defaultSafeVolume = 30  // Safe startup cap
+    private static let minimumAudibleVolume = 15  // Floor to prevent "no sound"
 
     private var savedVolume: Int {
         let v = UserDefaults.standard.integer(forKey: Self.volumeKey)
-        return v > 0 ? v : Self.defaultSafeVolume
+        let vol = v > 0 ? v : Self.defaultSafeVolume
+        // Never restore below minimum — prevents "no sound" from tiny saved values
+        return max(vol, Self.minimumAudibleVolume)
     }
 
     private func persistVolume(_ percent: Int) {
@@ -63,6 +66,7 @@ final class PlayerViewModel: ObservableObject {
 
     private var inFlightActions: Set<String> = []
     private var volumeDebounceTask: Task<Void, Never>?
+    private var didCorrectLowVolume = false
 
     private func debounced(_ key: String, action: () async -> Void) async {
         guard !inFlightActions.contains(key) else { return }
@@ -159,11 +163,11 @@ final class PlayerViewModel: ObservableObject {
         guard var tokens = await KeychainService.shared.loadTokens() else { return }
 
         if tokens.isExpired {
-            NSLog("[SpotifyIsland] Token expired on startup — refreshing before SDK init")
+            AppLog.info(" Token expired on startup — refreshing before SDK init")
             do {
                 tokens = try await SpotifyAuthService.shared.refreshAccessToken(refreshToken: tokens.refreshToken)
             } catch {
-                NSLog("[SpotifyIsland] Token refresh failed: \(error.localizedDescription)")
+                AppLog.info(" Token refresh failed: \(error.localizedDescription)")
                 return
             }
         }
@@ -187,7 +191,7 @@ final class PlayerViewModel: ObservableObject {
             guard self != nil else { return nil }
             let t = await KeychainService.shared.loadTokens()
             if let t, t.isExpired {
-                NSLog("[SpotifyIsland] Token provider: refreshing expired token")
+                AppLog.info(" Token provider: refreshing expired token")
                 let refreshed = try? await SpotifyAuthService.shared.refreshAccessToken(refreshToken: t.refreshToken)
                 return refreshed?.accessToken
             }
@@ -208,9 +212,9 @@ final class PlayerViewModel: ObservableObject {
                         try? await SpotifyAPIService.shared.transferPlayback(toDeviceId: deviceId)
                         // Apply saved volume immediately after transfer
                         try? await SpotifyAPIService.shared.setVolume(targetVolume, deviceId: deviceId)
-                        NSLog("[SpotifyIsland] Transferred to SDK device: \(deviceId), volume: \(targetVolume)%")
+                        AppLog.info(" Transferred to SDK device: \(deviceId), volume: \(targetVolume)%")
                     } else {
-                        NSLog("[SpotifyIsland] SDK has auth error — using external device")
+                        AppLog.info(" SDK has auth error — using external device")
                     }
                 }
             }
@@ -261,12 +265,12 @@ final class PlayerViewModel: ObservableObject {
         let timeRemaining = expiryDate.timeIntervalSinceNow
 
         if timeRemaining < 300 {
-            NSLog("[SpotifyIsland] Token expiring in \(Int(timeRemaining))s — proactively refreshing")
+            AppLog.info(" Token expiring in \(Int(timeRemaining))s — proactively refreshing")
             do {
                 let newTokens = try await SpotifyAuthService.shared.refreshAccessToken(refreshToken: tokens.refreshToken)
                 playbackService.updateToken(newTokens.accessToken)
             } catch {
-                NSLog("[SpotifyIsland] Proactive token refresh failed: \(error.localizedDescription)")
+                AppLog.info(" Proactive token refresh failed: \(error.localizedDescription)")
             }
         }
     }
@@ -324,8 +328,22 @@ final class PlayerViewModel: ObservableObject {
             repeatMode = RepeatMode(rawValue: state.repeatState) ?? .off
 
             if let deviceVolume = state.device?.volumePercent, !isAdjustingVolume {
-                volumePercent = deviceVolume
-                persistVolume(deviceVolume)
+                // Enforce minimum audible volume once per session
+                if deviceVolume < Self.minimumAudibleVolume && deviceVolume > 0 && !didCorrectLowVolume {
+                    didCorrectLowVolume = true
+                    AppLog.info("⚠️ Device volume \(deviceVolume)% below floor — raising to \(Self.minimumAudibleVolume)%")
+                    volumePercent = Self.minimumAudibleVolume
+                    persistVolume(Self.minimumAudibleVolume)
+                    Task {
+                        try? await SpotifyAPIService.shared.setVolume(Self.minimumAudibleVolume, deviceId: sdkDeviceId)
+                    }
+                } else {
+                    volumePercent = deviceVolume
+                    if deviceVolume >= Self.minimumAudibleVolume {
+                        didCorrectLowVolume = false  // Reset once volume is normal
+                    }
+                    persistVolume(deviceVolume)
+                }
             }
 
             // Correct progress drift (only when not user-dragging)

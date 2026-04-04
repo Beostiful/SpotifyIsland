@@ -81,7 +81,7 @@ final class WebPlaybackService: NSObject, ObservableObject {
             )
         }
 
-        NSLog("[SpotifyIsland] Loading Spotify Web Playback SDK...")
+        AppLog.info("Loading Spotify Web Playback SDK...")
         let html = buildSDKPage(token: pendingToken ?? "")
         wv.loadHTMLString(html, baseURL: URL(string: "https://sdk.scdn.co"))
     }
@@ -201,7 +201,7 @@ final class WebPlaybackService: NSObject, ObservableObject {
             try? await Task.sleep(for: .seconds(3))
             guard let self, !Task.isCancelled else { return }
 
-            NSLog("[SpotifyIsland] Attempting SDK reconnect...")
+            AppLog.info(" Attempting SDK reconnect...")
             if let freshToken = await self.tokenProvider?() {
                 self.pendingToken = freshToken
                 self.hasAuthError = false
@@ -223,13 +223,13 @@ final class WebPlaybackService: NSObject, ObservableObject {
                 """
                 try? await self.webView?.evaluateJavaScript(js)
             } else {
-                NSLog("[SpotifyIsland] Cannot reconnect — no valid token")
+                AppLog.info(" Cannot reconnect — no valid token")
             }
         }
     }
 
     private func fullRestart() {
-        NSLog("[SpotifyIsland] Full SDK restart...")
+        AppLog.info(" Full SDK restart...")
         guard let provider = tokenProvider else { return }
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -255,17 +255,17 @@ extension WebPlaybackService: WKScriptMessageHandler {
                 isReady = true
                 hasAuthError = false
                 connectRetryCount = 0
-                NSLog("[SpotifyIsland] SDK ready, device: \(id)")
+                AppLog.info(" SDK ready, device: \(id)")
             }
 
         case "not_ready":
             isReady = false
-            NSLog("[SpotifyIsland] SDK not ready — reconnecting")
+            AppLog.info(" SDK not ready — reconnecting")
             scheduleReconnect()
 
         case "connect_result":
             let success = body["success"] as? Bool ?? false
-            NSLog("[SpotifyIsland] connect() = \(success)")
+            AppLog.info(" connect() = \(success)")
             if !success {
                 connectRetryCount += 1
                 if connectRetryCount <= maxConnectRetries {
@@ -287,14 +287,14 @@ extension WebPlaybackService: WKScriptMessageHandler {
 
         case "error":
             let msg = body["message"] as? String ?? "unknown"
-            NSLog("[SpotifyIsland] SDK error: \(msg)")
+            AppLog.info(" SDK error: \(msg)")
             if msg.contains("auth:") || msg.contains("account:") {
                 hasAuthError = true
                 scheduleReconnect()
             }
 
         case "log":
-            NSLog("[SpotifyIsland] SDK: \(body["message"] as? String ?? "")")
+            AppLog.info(" SDK: \(body["message"] as? String ?? "")")
 
         case "state_changed":
             // Immediately notify the view model to poll fresh state
@@ -310,11 +310,11 @@ extension WebPlaybackService: WKScriptMessageHandler {
 
 extension WebPlaybackService: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        NSLog("[SpotifyIsland] HTML loaded — SDK initializing...")
+        AppLog.info(" HTML loaded — SDK initializing...")
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        NSLog("[SpotifyIsland] Navigation failed: \(error.localizedDescription)")
+        AppLog.info(" Navigation failed: \(error.localizedDescription)")
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             self?.fullRestart()
@@ -322,7 +322,7 @@ extension WebPlaybackService: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        NSLog("[SpotifyIsland] Provisional navigation failed: \(error.localizedDescription)")
+        AppLog.info(" Provisional navigation failed: \(error.localizedDescription)")
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             self?.fullRestart()
