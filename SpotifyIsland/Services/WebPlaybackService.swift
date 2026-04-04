@@ -27,6 +27,12 @@ final class WebPlaybackService: NSObject, ObservableObject {
     /// Prevents macOS App Nap from suspending our audio process.
     private var activityToken: NSObjectProtocol?
 
+    /// Health monitoring — detects when WebContent process dies silently
+    private var healthCheckTimer: Timer?
+    private var lastHeartbeat = Date()
+    private let healthCheckInterval: TimeInterval = 5.0
+    private let heartbeatTimeout: TimeInterval = 15.0
+
     // MARK: - Public API
 
     func setup(tokenProvider: @escaping () async -> String?) {
@@ -84,6 +90,8 @@ final class WebPlaybackService: NSObject, ObservableObject {
         AppLog.info("Loading Spotify Web Playback SDK...")
         let html = buildSDKPage(token: pendingToken ?? "")
         wv.loadHTMLString(html, baseURL: URL(string: "https://sdk.scdn.co"))
+
+        startHealthCheck()
     }
 
     func updateToken(_ token: String) {
@@ -96,12 +104,55 @@ final class WebPlaybackService: NSObject, ObservableObject {
     func disconnect() {
         reconnectTask?.cancel()
         reconnectTask = nil
+        stopHealthCheck()
         webView?.evaluateJavaScript("if(typeof _disconnectPlayer==='function') _disconnectPlayer()")
         deviceId = nil
         isReady = false
         if let token = activityToken {
             ProcessInfo.processInfo.endActivity(token)
             activityToken = nil
+        }
+    }
+
+    // MARK: - Health Monitoring
+
+    private func startHealthCheck() {
+        stopHealthCheck()
+        lastHeartbeat = Date()
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: healthCheckInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.performHealthCheck()
+            }
+        }
+    }
+
+    private func stopHealthCheck() {
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
+    }
+
+    private func performHealthCheck() {
+        let timeSinceHeartbeat = Date().timeIntervalSince(lastHeartbeat)
+
+        if timeSinceHeartbeat > heartbeatTimeout && isReady {
+            AppLog.info("⚠️ No heartbeat for \(Int(timeSinceHeartbeat))s — WebContent may be dead, restarting SDK")
+            isReady = false
+            deviceId = nil
+            fullRestart()
+            return
+        }
+
+        // Also probe the WebView directly — if JS eval fails, the process is dead
+        webView?.evaluateJavaScript("typeof _player !== 'undefined'") { [weak self] result, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if error != nil {
+                    AppLog.info("⚠️ WebView JS eval failed — process likely dead, restarting")
+                    self.isReady = false
+                    self.deviceId = nil
+                    self.fullRestart()
+                }
+            }
         }
     }
 
@@ -179,6 +230,9 @@ final class WebPlaybackService: NSObject, ObservableObject {
                 // Notify native on EVERY state change (including null = track ended)
                 _post({type:'state_changed', hasState: !!state});
             });
+            _player.addListener('playback_error', function(data) {
+                _post({type:'error', message:'playback: ' + data.message});
+            });
 
             _player.connect().then(function(success) {
                 _post({type:'connect_result', success: success});
@@ -186,6 +240,20 @@ final class WebPlaybackService: NSObject, ObservableObject {
                 _post({type:'error', message:'connect error: ' + err});
             });
         }
+
+        // Heartbeat — lets native side know the WebContent process is alive
+        setInterval(function() {
+            var state = 'no_player';
+            if (_player) {
+                _player.getCurrentState().then(function(s) {
+                    _post({type:'heartbeat', playerState: s ? 'active' : 'idle'});
+                }).catch(function() {
+                    _post({type:'heartbeat', playerState: 'error'});
+                });
+            } else {
+                _post({type:'heartbeat', playerState: state});
+            }
+        }, 4000);
         </script>
         <script src="https://sdk.scdn.co/spotify-player.js"></script>
         </body>
@@ -298,7 +366,16 @@ extension WebPlaybackService: WKScriptMessageHandler {
 
         case "state_changed":
             // Immediately notify the view model to poll fresh state
+            lastHeartbeat = Date()
             onStateChanged?()
+
+        case "heartbeat":
+            lastHeartbeat = Date()
+            let playerState = body["playerState"] as? String ?? "unknown"
+            if playerState == "error" {
+                AppLog.info("💓 Heartbeat: player in error state — scheduling reconnect")
+                scheduleReconnect()
+            }
 
         default:
             break

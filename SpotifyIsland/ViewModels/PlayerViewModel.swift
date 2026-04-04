@@ -210,20 +210,19 @@ final class PlayerViewModel: ObservableObject {
         }
         playbackService.updateToken(tokens.accessToken)
 
-        // When the SDK is ready, transfer playback and apply safe volume
+        // When the SDK is ready (or reconnects with a new device), transfer playback
         playbackCancellable = playbackService.$deviceId
             .compactMap { $0 }
-            .first()
+            .removeDuplicates()
             .sink { [weak self] deviceId in
                 Task { [weak self] in
                     guard let self else { return }
                     if self.playbackService.hasAuthError == false {
-                        // Set volume on the new device FIRST (before transfer starts playback)
                         let targetVolume = self.savedVolume
                         try? await SpotifyAPIService.shared.transferPlayback(toDeviceId: deviceId)
-                        // Apply saved volume immediately after transfer
                         try? await SpotifyAPIService.shared.setVolume(targetVolume, deviceId: deviceId)
                         AppLog.info(" Transferred to SDK device: \(deviceId), volume: \(targetVolume)%")
+                        await self.pollPlayback()
                     } else {
                         AppLog.info(" SDK has auth error — using external device")
                     }
