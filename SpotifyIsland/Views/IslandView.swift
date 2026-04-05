@@ -137,12 +137,6 @@ struct IslandView: View {
             bottomRadius: viewModel.isExpanded ? 18 : 14
         )
         .fill(Color.black)
-        .shadow(
-            color: .black.opacity(viewModel.isExpanded ? 0 : 0.55),
-            radius: viewModel.isExpanded ? 0 : 18,
-            x: 0,
-            y: viewModel.isExpanded ? 0 : 8
-        )
     }
 
     // MARK: - Author Bar (Expanded)
